@@ -1,0 +1,10 @@
+<cfg standalone="yes" configVersion="1">
+	<trustedUser userName="testuser">
+		<trustedVM uuid="" >
+			<param name="autostart-type"></param>
+			<param name="autostart-delay"></param>
+			<param name="autostop-type"></param>
+			<param name="order">1</param>
+		</trustedVM>
+	</trustedUser>
+</cfg>

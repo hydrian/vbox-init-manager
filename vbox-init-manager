@@ -1,0 +1,182 @@
+#!/bin/bash
+#---
+## @copyright ben.tyger@tygerclan.net
+## @license APL2
+#---
+
+DEFAULT_SHUTDOWN_TYPE="${DEFAULT_SHUTDOWN_TYPE:-savestate}"
+DEFAULT_STATUP_WAIT="${DEFAULT_STATUP_WAIT:-90}"
+
+if [ -r /etc/defaults/vbox-init-manager ] ; then
+	source /etc/defaults/vbox-init-manager
+fi
+
+SCRIPT_XML_CONFIG_FILE="${SCRIPT_XML_CONFIG_FILE:-/etc/virtualbox/vbox-init-manager.xml}"
+VBOXMANAGE_BIN="${VBOXMANAGE_BIN:-/usr/bin/vboxmanage}"
+VBOXHEADLESS_BIN="${VBOXHEADLESS_BIN:-/usr/bin}"
+SUDO_BIN="${SUDO_BIN:-/usr/bin/sudo}"
+PGREP_BIN="${PGREP_BIN:-/usr/bin/pgrep}"
+GREP_BIN="${GREP_BIN:-/bin/grep}"
+SED_BIN="${SED_BIN:-/bin/sed}"
+XMLSTARLET_BIN="${XMLSTARLET_BIN:/usr/bin/xmlstarlet}"
+
+
+
+#---
+## Gets the value of VM property via vboxmanage
+## @param	string	User owning VM
+## @param	string	UUID if user's VM
+## @param	string	property name
+## @stdout Propery value
+## @return 0: Entry Found 1:Entry not found Other: Error
+#---
+function getVMProperty { 
+	local VM_USER="${1}"
+	local VM_UUID="${2}"
+	local VM_PROPERTY_NAME="${3}"
+	local VM_DATA=$(sudo -u "${VM_USER}" $VBOXMANAGE_BIN showvminfo "${VM_UUID}" --details --machinereadable)
+	local PROPERTY_LINE=$(echo "${VM_DATA}"|grep -E "^${VM_PROPERTY_NAME}\=")
+	FOUND=$?
+	if [ $FOUND -ne 0 ] ; then 
+		return 1
+	fi
+	local PROPERTY_VALUE=$(echo "PROPERTY_LINE"|sed -r "s/^${VM_PROPERTY_NAME}\=(.*)$/\1/")
+	echo "${PROPERTY_VALUE}"
+	return 0
+}
+
+#---
+## Queries VM.vbox(XML file) config file for raw the value of VM property
+## Useful for setting not exposed by vboxmanage
+## All XPath queries must use 'N' namespace 
+## @param	string	User owning VM
+## @param	string	UUID if user's VM
+## @param	XPath	  XPath Location of property name
+## @stdout Propery value
+## @return	0: Entry Found Non-0: Error
+#---
+function getVMConfigRawXML {
+	local VM_USER="${1}"
+	local VM_UUID="${2}"
+	local PROPERTY_XPATH="${3}"
+	local VM_VBOX_XML_FILE=$(getVMProperties "${VM_USER}" "$VM_UUID" "CfgFile")
+	$XMLSTARLET_BIN sel -N "N=http://www.innotek.de/VirtualBox-settings" -t -v "${PROPERTY_XPATH}" "${VM_VBOX_XML_FILE}"
+	return $?
+}
+	
+#---
+## Outputs PID
+## @param	string	UUID of user's VM
+## @stdout	integer	PID
+## @return 0: Entry Found;1: Not found; Other: Error
+#---
+function getPidByUUID {
+	local VM_UUID="${1}"
+	pgrep -f "${VM_UUID}"
+	return $?
+}
+
+#---
+## Lists of the PIDs running VirtualBox processes on this system
+## @stdout	List of PIDs running VirtualBox processes
+## @return 0: Entries Found; 1: No entries found; Other: Error
+#---
+function getUsersRunningVBox {
+	local VBOX_PIDS_LIST=$(pgrep VBoxHeadless)
+
+	for VBOX_PID in $VBOX_PIDS_LIST ; do 
+		local VBOX_USERS_RAW="${VBOX_USERS_RAW} $(ps --no-header u $VBOX_PID|cut -d\  -f1)"
+	done
+
+	test -z "$VBOX_USERS_RAW" && return 1
+	echo "$VBOX_USERS_RAW"|sort|uniq
+	return 0
+}
+
+#---
+## List of running VM UUIDs for a specific user
+## @param		string	Username
+## @stdout	List of PIDs running VirtualBox processes
+## @return 0: Entries Found; 1: No entries found; Other: Error
+#---
+function getRunningUUIDsByUser {
+	local USER="$1"
+	sudo -u "${USER}" ${VBOXMANAGE_BIN} list runningvms|sed  -r 's/.*\{(.*)\}/\1/)'
+	return $?
+}
+
+#---
+## Starts a headless VM according to config
+## @param		string	Username
+## @param		string	VM UUID
+## @return 0: Started VM Successfully; Other: Error
+#---
+function startVM {
+	local VM_USER="${1}"
+	local VM_UUID="${2}"
+	local VM_NAME=$(getVMProperty "$VM_USER" "$VM_UUID" "name")
+	local VM_START_DELAY_CONFIG =$(getVMProperty "$VM_USER" "$VM_UUID" 'autostart-delay')
+	local VM_START_DELAY_CONFIG_RES=$?
+	if [ $VM_START_DELAY_CONFIG_RES -ne 0 ] ; then 
+		local VM_START_DELAY="$DEFAULT_STARTUP_WAIT"
+	else
+		local VM_START_DELAY="$VM_START_DELAY_CONFIG"
+	fi
+	$SUDO_BIN -u "$VM_USER" $VBOXHEADLESS_BIN --comment "$VM_NAME" --startvm "${VM_UUID}" --vrde config
+	sleep $VM_START_DELAY
+	local VM_PID=$(getPidByUUID "$VM_UUID")
+	local VM_PID_RES=$?
+	if [ $VM_PID_RES -ne 0 ] ; then 
+		return 1
+	else
+		return 0
+	fi
+}
+
+#---
+## Stops the VM via according to the configuration
+## @param	string	User owning VM
+## @param	string	UUID if user's VM
+## @return 0: Stop Successfully; 1: Not Running; Other: Error
+#---	
+function stopVM {
+	local VM_USER="${1}" 
+	local VM_UUID="${2}"
+	local VM_PID=$(getPidByUUID "${VM_UUID}")
+	local GET_PID_RES=$?
+	test [ $GET_PID_RES -ne 0 ] && return 1
+	local VM_DATA=$(sudo -u "${VM_USER}" $VBOXMANAGE_BIN showvminfo "${VM_UUID}" --details --machinereadable)
+	local VM_NAME=$(getVMProperty "name")
+	
+	local VM_CFG_STOP_TYPE=$(getVMConfigRawXML "$VM_USER" "$VM_UUID" '/N:VirtualBox/N:Machine/N:Autostart/@autostop'
+	local VM_CFG_STOP_TYPE_RES=$?
+	if [ VM_CFG_STOP_TYPE_RES -ne 0 ] ; then
+		local VM_STOP_TYPE="${DEFAULT_SHUTDOWN_TYPE}"
+	else 
+		local VM_STOP_TYPE="${VM_CFG_STOP_TYPE}"
+	fi
+
+	sudo -u "${VM_USER}" "$VBOXMANAGE_BIN" controlvm "${VM_UUID}" "${VM_SHUTDOWN_TYPE}" 1>/dev/null 2>&1
+	local EXEC_STOP_RES=$?
+	test [ $EXEC_STOP_RES -ne 0 ] && return 2
+	wait ${VM_PID}
+	return 0
+}
+
+function getTrustedUsers {
+	$XMLSTARLET_BIN sel -t -v "/config/trustedUsers/@name" "${SCRIPT_XML_CONFIG_FILE}"
+	return $?
+}
+
+function getTrustedUUID {
+	local $VM_USER=${1}
+	$XMLSTARLET_BIN sel -t -v "/config/trustedUsers[@name='$VM_USER']/trustedMachine/@UUID" "${SCRIPT_XML_CONFIG_FILE}"
+	return $?
+}
+
+
+
+for VBOX_USER in getUsersRunningVBox ; do 
+	for VM_UUID in getVmUUIDsByUser "${VBOX_USER}" ; do 
+		
+
