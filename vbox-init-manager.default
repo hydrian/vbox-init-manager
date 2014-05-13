@@ -1,0 +1,19 @@
+
+### Override config location 
+#SCRIPT_XML_CONFIG_FILE=""
+
+### Override location binary vboxmanage 
+#VBOXMANAGE_BIN=""
+### Override location binary vboxheadless
+#VBOXHEADLESS_BIN=""
+### Override location binary sudo
+#SUDO_BIN=""
+### Override location binary vboxmanage 
+#PGREP_BIN=""
+### Override location binary pgrep
+#GREP_BIN=""
+### Override location binary sed
+#SED_BIN=""
+## Override location binary XMLStarlet
+#XMLSTARLET_BIN=""
+
